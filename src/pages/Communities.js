@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import React, { useState, useEffect, useMemo } from "react";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import {
   collection,
   getDocs,
@@ -15,21 +15,25 @@ import {
 } from "firebase/firestore";
 import { db } from "../config/firebase";
 import { useAuth } from "../contexts/AuthContext";
-import { FaSearch, FaUsers, FaPlus, FaMinus, FaFilter } from "react-icons/fa";
+import { useSearch } from "../contexts/SearchContext";
+import { FaSearch, FaUsers, FaPlus, FaMinus, FaFilter, FaChevronDown } from "react-icons/fa";
 import Card from "../components/ui/Card";
 import CommunityImage from "../components/CommunityImage";
 import Button from "../components/ui/Button";
-import { getInitials } from "../components/CommunityImage";
+import { getInitials } from "../utils/stringUtils";
+import { useCommunitiesSearch } from '../contexts/CommunitiesSearchContext';
 
 const Communities = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { currentUser } = useAuth();
+  const { search, setSearch } = useSearch();
+  const { navbarSearch, setNavbarSearch } = useCommunitiesSearch();
   const [communities, setCommunities] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("");
   const [userMemberships, setUserMemberships] = useState([]);
-  const [categories, setCategories] = useState([
+  const [categories] = useState([
     "Technology",
     "Gaming",
     "Sports",
@@ -41,19 +45,52 @@ const Communities = () => {
   ]);
   const [sortBy, setSortBy] = useState("newest");
   const [showFilters, setShowFilters] = useState(false);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const [localSearchQuery, setLocalSearchQuery] = useState("");
+
+  const handleCommunitiesSearch = (e) => {
+    const value = e.target.value;
+    setSearch(value);
+    setLocalSearchQuery(value);
+  };
+
+  // Only update URL when explicitly searching
+  const handleSearchSubmit = (e) => {
+    e.preventDefault();
+    if (search.trim()) {
+      navigate(`/communities?search=${encodeURIComponent(search.trim())}`);
+    } else {
+      navigate('/communities');
+    }
+  };
+
+  // Only update local search from URL on initial load
+  useEffect(() => {
+    if (isInitialLoad) {
+      const searchParams = new URLSearchParams(location.search);
+      const searchFromUrl = searchParams.get('search');
+      
+      if (searchFromUrl !== null) {
+        setSearch(searchFromUrl);
+        setLocalSearchQuery(searchFromUrl);
+      }
+      setIsInitialLoad(false);
+    }
+  }, [location.search, isInitialLoad, setSearch]);
 
   const fetchCommunities = async () => {
     try {
       setLoading(true);
-      const communitiesQuery = query(collection(db, "communities"));
-      const communitiesSnapshot = await getDocs(communitiesQuery);
-      const communitiesList = communitiesSnapshot.docs.map((doc) => ({
+      const communitiesRef = collection(db, "communities");
+      const q = query(communitiesRef, orderBy("createdAt", "desc"));
+      const querySnapshot = await getDocs(q);
+      const communitiesData = querySnapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
       }));
-      setCommunities(communitiesList);
+      setCommunities(communitiesData);
 
-      // If user is logged in, fetch their memberships
+      // Only fetch user memberships if user is authenticated
       if (currentUser) {
         const userDoc = await getDoc(doc(db, "users", currentUser.uid));
         if (userDoc.exists()) {
@@ -70,7 +107,7 @@ const Communities = () => {
 
   useEffect(() => {
     fetchCommunities();
-  }, [currentUser]);
+  }, []);
 
   const handleJoinCommunity = async (communityId) => {
     if (!currentUser) return;
@@ -105,20 +142,17 @@ const Communities = () => {
       const communityDoc = await getDoc(communityRef);
       if (communityDoc.exists()) {
         const communityData = communityDoc.data();
-        const notificationRef = collection(
-          db,
-          "users",
-          communityData.createdBy,
-          "notifications"
-        );
+        const notificationRef = collection(db, "notifications");
         await addDoc(notificationRef, {
           type: "join",
           communityId: communityId,
           communityName: communityData.name,
-          createdBy: currentUser.uid,
-          createdByDisplayName: currentUser.displayName,
+          toUser: communityData.createdBy,
+          fromUser: currentUser.uid,
+          fromUserName: currentUser.displayName || currentUser.email,
+          message: `${currentUser.displayName || currentUser.email} joined your community "${communityData.name}"`,
           createdAt: new Date(),
-          read: false,
+          read: false
         });
       }
     } catch (error) {
@@ -161,20 +195,17 @@ const Communities = () => {
       const communityDoc = await getDoc(communityRef);
       if (communityDoc.exists()) {
         const communityData = communityDoc.data();
-        const notificationRef = collection(
-          db,
-          "users",
-          communityData.createdBy,
-          "notifications"
-        );
+        const notificationRef = collection(db, "notifications");
         await addDoc(notificationRef, {
           type: "leave",
           communityId: communityId,
           communityName: communityData.name,
-          createdBy: currentUser.uid,
-          createdByDisplayName: currentUser.displayName,
+          toUser: communityData.createdBy,
+          fromUser: currentUser.uid,
+          fromUserName: currentUser.displayName || currentUser.email,
+          message: `${currentUser.displayName || currentUser.email} left your community "${communityData.name}"`,
           createdAt: new Date(),
-          read: false,
+          read: false
         });
       }
     } catch (error) {
@@ -182,41 +213,25 @@ const Communities = () => {
     }
   };
 
-  const filteredCommunities = communities
-    .filter((community) => {
-      const matchesSearch =
-        community.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        community.description.toLowerCase().includes(searchQuery.toLowerCase());
+  const filteredCommunities = useMemo(() => {
+    return communities
+      .filter((community) => {
+        // Search filter
+        const searchValue = navbarSearch.trim() !== '' ? navbarSearch : search;
+        const matchesSearch = !searchValue.trim() || 
+          community.name.toLowerCase().includes(searchValue.toLowerCase().trim()) ||
+          community.description.toLowerCase().includes(searchValue.toLowerCase().trim());
 
-      let matchesCategory;
-      if (selectedCategory === "") {
-        matchesCategory = true; // Show all communities
-      } else if (selectedCategory === "Other") {
-        // Show communities whose category is not in the predefined categories
-        matchesCategory = !categories.includes(community.category);
-      } else {
-        // Show communities matching the selected category
-        matchesCategory =
-          community.category.toLowerCase() === selectedCategory.toLowerCase();
-      }
+        // Category filter
+        const matchesCategory = !selectedCategory || community.category === selectedCategory;
 
-      return matchesSearch && matchesCategory;
-    })
-    .sort((a, b) => {
-      // Sort communities based on selected option
-      switch (sortBy) {
-        case "newest":
-          return new Date(b.createdAt) - new Date(a.createdAt);
-        case "oldest":
-          return new Date(a.createdAt) - new Date(b.createdAt);
-        case "members":
-          return (b.members?.length || 0) - (a.members?.length || 0);
-        case "name":
-          return a.name.localeCompare(b.name);
-        default:
-          return 0;
-      }
-    });
+        return matchesSearch && matchesCategory;
+      })
+      .sort((a, b) => {
+        // Sort by newest first
+        return b.createdAt - a.createdAt;
+      });
+  }, [communities, search, navbarSearch, selectedCategory]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -232,25 +247,31 @@ const Communities = () => {
               </p>
             </div>
             <Button
-              onClick={() => navigate("/create-community")}
+              onClick={() => {
+                if (currentUser) {
+                  navigate("/create-community");
+                } else {
+                  navigate("/login");
+                }
+              }}
               className="mt-4 md:mt-0"
             >
-              Create Community
+              {currentUser ? "Create Community" : "Sign in to Create"}
             </Button>
           </div>
 
           <div className="flex flex-col md:flex-row gap-4 mb-8">
             <div className="relative flex-1">
-              <div className="relative">
+              <form onSubmit={handleSearchSubmit} className="relative">
                 <input
                   type="text"
                   placeholder="Search communities..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  value={search}
+                  onChange={handleCommunitiesSearch}
                   className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                 />
                 <FaSearch className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-              </div>
+              </form>
             </div>
             <div className="flex gap-4">
               <div className="relative w-full md:w-64">
@@ -268,18 +289,20 @@ const Communities = () => {
                 </select>
                 <FaFilter className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
               </div>
-              <div className="relative w-full md:w-48">
+              <div className="relative">
                 <select
                   value={sortBy}
                   onChange={(e) => setSortBy(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 appearance-none bg-white"
+                  className="w-full sm:w-48 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 appearance-none bg-white"
                 >
-                  <option value="newest">Newest First</option>
-                  <option value="oldest">Oldest First</option>
+                  <option value="newest">Newest</option>
+                  <option value="oldest">Oldest</option>
                   <option value="members">Most Members</option>
                   <option value="name">Name (A-Z)</option>
                 </select>
-                <FaFilter className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                <div className="absolute right-3 top-3 pointer-events-none">
+                  <FaChevronDown className="h-4 w-4 text-gray-400" />
+                </div>
               </div>
             </div>
           </div>
@@ -321,7 +344,7 @@ const Communities = () => {
                             {community.members?.length || 0} members
                           </span>
                         </div>
-                        {currentUser &&
+                        {currentUser ? (
                           community.createdBy !== currentUser.uid &&
                           (userMemberships.includes(community.id) ? (
                             <button
@@ -345,7 +368,19 @@ const Communities = () => {
                               <FaPlus className="h-4 w-4 mr-2" />
                               <span className="text-sm font-medium">Join</span>
                             </button>
-                          ))}
+                          ))
+                        ) : (
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              navigate("/login");
+                            }}
+                            className="inline-flex items-center px-4 py-2 rounded-lg bg-gray-50 text-gray-600 hover:bg-gray-100 transition-colors duration-200"
+                          >
+                            <FaPlus className="h-4 w-4 mr-2" />
+                            <span className="text-sm font-medium">Sign in to Join</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   </Card>

@@ -18,13 +18,50 @@ const Login = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    if (!email || !password) {
+      return setError("Please fill in all fields");
+    }
+
     try {
       setError("");
       setLoading(true);
-      await login(email, password);
-      navigate("/");
+      console.log("Starting login process...");
+      
+      const user = await login(email, password);
+      console.log("Login successful, user:", user);
+      
+      // Check if user was actually logged in
+      if (user && user.uid) {
+        console.log("User logged in successfully with UID:", user.uid);
+        
+        // Clear the form
+        setEmail("");
+        setPassword("");
+        
+        // Navigate to home page
+        navigate("/", { replace: true });
+      } else {
+        throw new Error("Login failed - no user object returned");
+      }
     } catch (err) {
-      setError("Failed to sign in. Please check your credentials.");
+      console.error("Login error:", err);
+      console.error("Error code:", err.code);
+      console.error("Error message:", err.message);
+      
+      if (err.code === "auth/user-not-found") {
+        setError("No account found with this email. Please check your email or sign up.");
+      } else if (err.code === "auth/wrong-password") {
+        setError("Incorrect password. Please try again.");
+      } else if (err.code === "auth/invalid-email") {
+        setError("Please enter a valid email address.");
+      } else if (err.code === "auth/too-many-requests") {
+        setError("Too many failed attempts. Please try again later.");
+      } else if (err.code === "auth/network-request-failed") {
+        setError("Network error. Please check your internet connection and try again.");
+      } else {
+        setError(`Failed to sign in: ${err.message}`);
+      }
     } finally {
       setLoading(false);
     }

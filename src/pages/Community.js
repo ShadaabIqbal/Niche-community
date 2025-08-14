@@ -44,6 +44,9 @@ export default function Community() {
   const isCreator = community?.createdBy === currentUser?.uid;
   const isMember = community?.members?.includes(currentUser?.uid);
 
+  // Check if user can post (must be authenticated and a member)
+  const canPost = currentUser && isMember;
+
   useEffect(() => {
     async function fetchMemberDetails() {
       if (!community?.members?.length) return;
@@ -134,12 +137,8 @@ export default function Community() {
   };
 
   useEffect(() => {
-    if (!currentUser) {
-      navigate("/login");
-      return;
-    }
     fetchCommunity();
-  }, [id, currentUser, navigate]);
+  }, [id]);
 
   async function handleDeleteCommunity() {
     try {
@@ -174,18 +173,17 @@ export default function Community() {
       });
 
       // Create notification for removed member
-      const notificationRef = collection(
-        db,
-        "users",
-        memberId,
-        "notifications"
-      );
+      const notificationRef = collection(db, "notifications");
       await addDoc(notificationRef, {
         type: "removed",
         communityId: id,
         communityName: community.name,
-        createdBy: currentUser.uid,
-        createdByDisplayName: currentUser.displayName,
+        toUser: memberId,
+        fromUser: currentUser.uid,
+        fromUserName: currentUser.displayName || currentUser.email,
+        message: `${
+          currentUser.displayName || currentUser.email
+        } removed you from the community "${community.name}"`,
         createdAt: new Date(),
         read: false,
       });
@@ -202,27 +200,22 @@ export default function Community() {
   };
 
   const handleJoinCommunity = async () => {
+    if (!currentUser) {
+      navigate("/login");
+      return;
+    }
+
     try {
+      // Update community document
       const communityRef = doc(db, "communities", id);
       await updateDoc(communityRef, {
         members: arrayUnion(currentUser.uid),
       });
 
-      // Create notification for community creator
-      const notificationRef = collection(
-        db,
-        "users",
-        community.createdBy,
-        "notifications"
-      );
-      await addDoc(notificationRef, {
-        type: "join",
-        communityId: id,
-        communityName: community.name,
-        createdBy: currentUser.uid,
-        createdByDisplayName: currentUser.displayName,
-        createdAt: new Date(),
-        read: false,
+      // Update user document
+      const userRef = doc(db, "users", currentUser.uid);
+      await updateDoc(userRef, {
+        communities: arrayUnion(id),
       });
 
       // Update local state
@@ -230,34 +223,39 @@ export default function Community() {
         ...prev,
         members: [...prev.members, currentUser.uid],
       }));
+
+      // Create notification for community creator
+      const notificationRef = collection(db, "notifications");
+      await addDoc(notificationRef, {
+        type: "join",
+        communityId: id,
+        communityName: community.name,
+        toUser: community.createdBy,
+        fromUser: currentUser.uid,
+        fromUserName: currentUser.displayName || currentUser.email,
+        message: `${currentUser.displayName || currentUser.email} joined your community "${community.name}"`,
+        createdAt: new Date(),
+        read: false
+      });
     } catch (error) {
       console.error("Error joining community:", error);
-      setError("Failed to join community");
     }
   };
 
   const handleLeaveCommunity = async () => {
+    if (!currentUser) return;
+
     try {
+      // Update community document
       const communityRef = doc(db, "communities", id);
       await updateDoc(communityRef, {
         members: arrayRemove(currentUser.uid),
       });
 
-      // Create notification for community creator
-      const notificationRef = collection(
-        db,
-        "users",
-        community.createdBy,
-        "notifications"
-      );
-      await addDoc(notificationRef, {
-        type: "leave",
-        communityId: id,
-        communityName: community.name,
-        createdBy: currentUser.uid,
-        createdByDisplayName: currentUser.displayName,
-        createdAt: new Date(),
-        read: false,
+      // Update user document
+      const userRef = doc(db, "users", currentUser.uid);
+      await updateDoc(userRef, {
+        communities: arrayRemove(id),
       });
 
       // Update local state
@@ -265,9 +263,22 @@ export default function Community() {
         ...prev,
         members: prev.members.filter((m) => m !== currentUser.uid),
       }));
+
+      // Create notification for community creator
+      const notificationRef = collection(db, "notifications");
+      await addDoc(notificationRef, {
+        type: "leave",
+        communityId: id,
+        communityName: community.name,
+        toUser: community.createdBy,
+        fromUser: currentUser.uid,
+        fromUserName: currentUser.displayName || currentUser.email,
+        message: `${currentUser.displayName || currentUser.email} left your community "${community.name}"`,
+        createdAt: new Date(),
+        read: false
+      });
     } catch (error) {
       console.error("Error leaving community:", error);
-      setError("Failed to leave community");
     }
   };
 
@@ -587,7 +598,7 @@ export default function Community() {
             </div>
 
             {/* Post Creation Form */}
-            {isMember && (
+            {canPost && (
               <div className="mt-8">
                 <h3 className="text-xl font-semibold text-gray-900 mb-4">
                   Create a Post
@@ -629,6 +640,16 @@ export default function Community() {
                     Post
                   </Button>
                 </form>
+              </div>
+            )}
+            {!canPost && (
+              <div className="mt-8 text-center text-gray-600">
+                <p>
+                  You must be a member of this community to create posts.
+                </p>
+                <Button onClick={handleJoinCommunity} className="mt-4">
+                  Join Community
+                </Button>
               </div>
             )}
 
@@ -700,7 +721,7 @@ export default function Community() {
                     <PostInteractions
                       post={post}
                       communityId={community.id}
-                      currentUserId={currentUser.uid}
+                      currentUserId={currentUser?.uid || null}
                     />
                   </Card>
                 ))

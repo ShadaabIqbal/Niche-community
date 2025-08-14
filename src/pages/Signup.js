@@ -1,8 +1,5 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
-import { auth, db } from "../config/firebase";
 import { useAuth } from "../contexts/AuthContext";
 import { FaEnvelope, FaLock, FaUser, FaGoogle, FaGithub } from "react-icons/fa";
 import Button from "../components/ui/Button";
@@ -37,37 +34,52 @@ const Signup = () => {
       return setError("Passwords do not match");
     }
 
+    if (password.length < 6) {
+      return setError("Password must be at least 6 characters long");
+    }
+
     try {
       setError("");
       setLoading(true);
+      console.log("Starting signup process...");
 
-      // Create user account
-      const { user } = await createUserWithEmailAndPassword(
-        auth,
-        email,
-        password
-      );
-
-      // Update profile
-      await updateProfile(user, {
-        displayName,
-      });
-
-      // Create user document in Firestore
-      await setDoc(doc(db, "users", user.uid), {
-        displayName,
-        email,
-        photoURL: "",
-        createdAt: new Date().toISOString(),
-        communities: [],
-        bio: "",
-        location: "",
-        website: "",
-      });
-
-      navigate("/");
+      // Use the AuthContext signup function
+      const user = await signup(email, password, displayName);
+      console.log("Signup successful, user:", user);
+      
+      // Check if user was actually created
+      if (user && user.uid) {
+        console.log("User created successfully with UID:", user.uid);
+        
+        // Clear the form
+        setFormData({
+          displayName: "",
+          email: "",
+          password: "",
+          confirmPassword: "",
+        });
+        
+        // Navigate to home page
+        navigate("/", { replace: true });
+      } else {
+        throw new Error("User creation failed - no user object returned");
+      }
     } catch (err) {
-      setError("Failed to create an account. Please try again.");
+      console.error("Signup error:", err);
+      console.error("Error code:", err.code);
+      console.error("Error message:", err.message);
+      
+      if (err.code === "auth/email-already-in-use") {
+        setError("An account with this email already exists. Please try signing in instead.");
+      } else if (err.code === "auth/weak-password") {
+        setError("Password is too weak. Please choose a stronger password.");
+      } else if (err.code === "auth/invalid-email") {
+        setError("Please enter a valid email address.");
+      } else if (err.code === "auth/network-request-failed") {
+        setError("Network error. Please check your internet connection and try again.");
+      } else {
+        setError(`Failed to create an account: ${err.message}`);
+      }
     } finally {
       setLoading(false);
     }
